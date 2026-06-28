@@ -436,7 +436,7 @@ mod tests {
 
         assert_eq!(
             error.message(),
-            "web-share --tunnel-provider requires a provider\nAvailable: localhost-run, sandhole, serveo, srv-us, tailscale-funnel, tailscale-serve."
+            "web-share --tunnel-provider requires a provider\nAvailable: devtunnel, localhost-run, sandhole, serveo, srv-us, tailscale-funnel, tailscale-serve."
         );
     }
 

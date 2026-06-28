@@ -38,4 +38,34 @@ mod tests {
         let names = available_from([("b".to_owned(), ""), ("a".to_owned(), "")], Vec::new());
         assert_eq!(names, vec!["a", "b"]);
     }
+
+    #[test]
+    fn devtunnel_url_pattern_matches_browser_url_not_inspect() {
+        let content = super::preset::embedded()
+            .iter()
+            .find(|(name, _)| *name == "devtunnel")
+            .map(|(_, content)| *content)
+            .expect("devtunnel preset is embedded");
+        let preset = parse("devtunnel", PresetSource::Embedded, content).expect("parses");
+        let regex = regex::Regex::new(&preset.url_pattern).expect("valid url_pattern");
+
+        // "Connect via browser:" line — the URL we want.
+        assert_eq!(
+            regex
+                .find("Connect via browser: https://b42v28rg-9777.usw2.devtunnels.ms")
+                .map(|m| m.as_str()),
+            Some("https://b42v28rg-9777.usw2.devtunnels.ms")
+        );
+        // Custom/named tunnel ids contain hyphens and must still match.
+        assert_eq!(
+            regex
+                .find("https://my-rmux-tunnel-9777.euw.devtunnels.ms")
+                .map(|m| m.as_str()),
+            Some("https://my-rmux-tunnel-9777.euw.devtunnels.ms")
+        );
+        // The "Inspect network activity:" URL must NOT be matched.
+        assert!(regex
+            .find("Inspect network activity: https://b42v28rg-9777-inspect.usw2.devtunnels.ms")
+            .is_none());
+    }
 }

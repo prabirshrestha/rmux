@@ -153,6 +153,9 @@ rmux web-share --tunnel-provider tailscale-serve
 # Public sharing using a built-in SSH tunnel preset
 rmux web-share --tunnel-provider localhost-run
 
+# Public sharing via Microsoft Dev Tunnels (needs the devtunnel CLI, signed in)
+rmux web-share --tunnel-provider devtunnel
+
 # Custom external tunnel address
 rmux web-share --tunnel-url https://my-tunnel.example.com
 
@@ -167,6 +170,8 @@ rmux web-share -t demo --spectator-only --max-spectators 150 --tunnel-url https:
 ```
 
 `rmux web-share` binds the daemon listener to loopback, so it cannot reliably tell public viewers apart by source IP once traffic arrives through a tunnel. Use your tunnel, CDN, or reverse proxy for per-IP limits. For example, a named Cloudflare Tunnel or nginx can cap WebSocket connections by client IP before traffic reaches RMUX.
+
+The `devtunnel` provider uses the Microsoft [dev tunnels](https://aka.ms/devtunnels/docs) CLI — see the [install & setup guide](https://learn.microsoft.com/azure/developer/dev-tunnels/get-started) (`brew install --cask devtunnel`, `winget install Microsoft.devtunnel`, or `curl -sL https://aka.ms/DevTunnelCliInstall | bash`). Sign in once: `devtunnel user login -g` for GitHub (browser); on a server with no browser, use device-code login: `devtunnel user login -g -d`. RMUX hosts an **anonymous** dev tunnel — the only mode the browser client supports (a private tunnel would require same-origin cookie auth the decoupled web client can't do cross-origin). "Anonymous" means the *transport* is open, **not** your terminal: every connection is end-to-end encrypted and gated by the per-share token (in the URL fragment) plus a pairing PIN, so an open tunnel only ever carries ciphertext an unauthenticated visitor can't use. Still, treat the link as a secret and use `--spectator-only` for view-only shares. The first time a browser opens the tunnel, Microsoft may show a one-time anti-phishing page; it does not affect the encrypted WebSocket. Each share creates a tunnel under your account that persists after the share stops — run `devtunnel delete-all` to clean up, or drop your own `~/.config/rmux/tunnels/devtunnel.toml` to customize the `devtunnel host` arguments (e.g. add `-e 1h` for an expiration or host a stable named tunnel).
 
 Account-less Cloudflare Quick Tunnels (`trycloudflare.com`) are intentionally not shipped as a built-in provider. They are useful for casual experiments, but their hostnames can take an unpredictable amount of time to become reachable and Cloudflare does not provide uptime guarantees for them. For a demo or Show HN, use a named tunnel or your own ingress and pass its stable URL with `--tunnel-url`.
 

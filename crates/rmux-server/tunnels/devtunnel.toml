@@ -1,0 +1,21 @@
+name = "devtunnel"
+program = "devtunnel"
+# --allow-anonymous opens the dev tunnels *transport* — required for browser access (a
+# private tunnel can't be reached cross-origin). The terminal stays end-to-end encrypted
+# and gated by the per-share token + pairing PIN, so an open tunnel only carries
+# ciphertext. See docs/web-share.md; override in ~/.config/rmux/tunnels to change args.
+args = [
+    "host",
+    "-p", "{port}",
+    "--allow-anonymous",
+    "--protocol", "http",
+    "--host-header", "unchanged",
+    "--origin-header", "unchanged",
+]
+# "Connect via browser: https://<id>-<port>.<cluster>.devtunnels.ms"
+# id segment allows hyphens (custom/named tunnels); excludes the "...-inspect..." URL.
+url_pattern = "https://[a-z0-9-]+-[0-9]+\\.[a-z0-9]+\\.devtunnels\\.ms"
+url_source = "stdout"
+ready_pattern = "Ready to accept connections for tunnel"
+ready_timeout_secs = 45
+install_hint = "Install the dev tunnels CLI and sign in: devtunnel user login -g (GitHub; headless/no browser: devtunnel user login -g -d). Install & setup: https://learn.microsoft.com/azure/developer/dev-tunnels/get-started"

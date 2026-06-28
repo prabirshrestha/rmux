@@ -1,8 +1,11 @@
+use std::sync::LazyLock;
+
 use clap::{ArgAction, ArgGroup, Args, ValueEnum};
 
 use super::{parse_command_args, parse_target_spec, TargetSpec};
 
 pub(crate) const WEB_SHARE_TUNNEL_PROVIDERS: &[&str] = &[
+    "devtunnel",
     "localhost-run",
     "sandhole",
     "serveo",
@@ -17,7 +20,7 @@ pub(crate) fn parse_web_share_args(arguments: Vec<String>) -> Result<WebShareArg
 
 #[derive(Debug, Clone, Args)]
 #[command(
-    after_help = WEB_SHARE_AFTER_HELP
+    after_help = web_share_after_help()
 )]
 #[command(group(
     ArgGroup::new("mode")
@@ -116,7 +119,10 @@ pub(crate) struct WebShareArgs {
     pub(crate) pin: bool,
 }
 
-const WEB_SHARE_AFTER_HELP: &str = "\
+// Built once from WEB_SHARE_TUNNEL_PROVIDERS so the provider list has a single source.
+static WEB_SHARE_AFTER_HELP: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "\
 Notes:
   -t accepts a pane target or a session name.
   Pane targets expose one pane; session targets expose the attached session view.
@@ -126,9 +132,17 @@ Notes:
   Use --pin-operator PIN and --pin-spectator PIN to supply 6-digit role PINs.
   Use web-share stop <share-id> to revoke an active share.
   Use --tunnel-provider NAME for internet access, or --tunnel-url for your own endpoint.
-  Available tunnel providers: localhost-run, sandhole, serveo, srv-us, tailscale-funnel, tailscale-serve.
+  Available tunnel providers: {providers}.
   Use --frontend-url to host your own static frontend.
-";
+",
+        providers = WEB_SHARE_TUNNEL_PROVIDERS.join(", ")
+    )
+});
+
+// `&LazyLock<String>` deref-coerces to `&'static str` for clap's `after_help`.
+fn web_share_after_help() -> &'static str {
+    &WEB_SHARE_AFTER_HELP
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum WebShareTerminalThemeArg {
