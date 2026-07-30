@@ -1,8 +1,13 @@
-use rmux_proto::{CommandOutput, RmuxError, SessionId, SessionName};
+#[cfg(test)]
+use rmux_proto::SessionId;
+use rmux_proto::{
+    CommandOutput, RmuxError, SessionName, INTERNAL_OWNED_SESSION_INITIAL_PANE_FORMAT,
+};
 
 use crate::format_runtime::render_runtime_template;
 
-use super::super::{scripting_support::format_context_for_target, RequestHandler};
+use super::{super::scripting_support::format_context_for_target, CreatedSessionIdentity};
+use crate::handler::RequestHandler;
 
 #[cfg(test)]
 #[derive(Debug, Default)]
@@ -54,13 +59,36 @@ impl RequestHandler {
 
     pub(super) async fn render_new_session_output(
         &self,
-        session_id: SessionId,
+        identity: CreatedSessionIdentity,
         template: Option<&str>,
     ) -> Result<(SessionName, CommandOutput), RmuxError> {
         const NEW_SESSION_TEMPLATE: &str = "#{session_name}:";
 
         #[cfg(test)]
-        self.pause_before_new_session_output(session_id).await;
+        self.pause_before_new_session_output(identity.session_id)
+            .await;
+
+        if template == Some(INTERNAL_OWNED_SESSION_INITIAL_PANE_FORMAT) {
+            let session_name = self
+                .state
+                .lock()
+                .await
+                .sessions
+                .session_by_id(identity.session_id)
+                .map(|session| session.name().clone())
+                .ok_or_else(|| RmuxError::SessionNotFound(identity.session_id.to_string()))?;
+            let output = format!(
+                "{}\t{}\t{}\t{}\n",
+                identity.session_id,
+                identity.initial_pane_id,
+                identity.initial_window_index,
+                identity.initial_pane_index,
+            );
+            return Ok((
+                session_name,
+                CommandOutput::from_stdout(output.into_bytes()),
+            ));
+        }
 
         loop {
             let session_name = self
@@ -68,17 +96,17 @@ impl RequestHandler {
                 .lock()
                 .await
                 .sessions
-                .session_by_id(session_id)
+                .session_by_id(identity.session_id)
                 .map(|session| session.name().clone())
-                .ok_or_else(|| RmuxError::SessionNotFound(session_id.to_string()))?;
+                .ok_or_else(|| RmuxError::SessionNotFound(identity.session_id.to_string()))?;
             let attached_count = self.attached_count(&session_name).await;
             let state = self.state.lock().await;
             let Some(current_session_name) = state
                 .sessions
-                .session_by_id(session_id)
+                .session_by_id(identity.session_id)
                 .map(|session| session.name().clone())
             else {
-                return Err(RmuxError::SessionNotFound(session_id.to_string()));
+                return Err(RmuxError::SessionNotFound(identity.session_id.to_string()));
             };
             if current_session_name != session_name {
                 continue;

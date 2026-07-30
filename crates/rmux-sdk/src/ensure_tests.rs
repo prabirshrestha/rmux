@@ -93,26 +93,37 @@ async fn process_command_session_sends_request_after_capability() {
 }
 
 #[test]
-fn owned_session_id_parser_accepts_exact_single_line_identity() {
+fn owned_session_identity_parser_accepts_exact_single_line_identity() {
     assert_eq!(
-        parse_owned_session_id(b"$42\n").expect("valid owned-session identity"),
-        SessionId::new(42)
+        parse_owned_session_identity(b"$42\t%7\t3\t5\n").expect("valid owned-session identity"),
+        OwnedSessionIdentity {
+            session_id: SessionId::new(42),
+            pane_id: PaneId::new(7),
+            window_index: 3,
+            pane_index: 5,
+        }
     );
 }
 
 #[test]
-fn owned_session_id_parser_rejects_ambiguous_or_malformed_output() {
+fn owned_session_identity_parser_rejects_ambiguous_or_malformed_output() {
     for output in [
-        b"$42".as_slice(),
-        b"$42\r\n".as_slice(),
-        b"42\n".as_slice(),
-        b"$invalid\n".as_slice(),
-        b"$1\n$2\n".as_slice(),
-        b"$1\n\n".as_slice(),
+        b"$42\t%7\t0\t0".as_slice(),
+        b"$42\t%7\t0\t0\r\n".as_slice(),
+        b"42\t%7\t0\t0\n".as_slice(),
+        b"$42\t7\t0\t0\n".as_slice(),
+        b"$invalid\t%7\t0\t0\n".as_slice(),
+        b"$42\t%invalid\t0\t0\n".as_slice(),
+        b"$42\t%7\tinvalid\t0\n".as_slice(),
+        b"$42\t%7\t0\tinvalid\n".as_slice(),
+        b"$42\t%7\t0\n".as_slice(),
+        b"$42\t%7\t0\t0\textra\n".as_slice(),
+        b"$1\t%2\t0\t0\n$3\t%4\t0\t0\n".as_slice(),
+        b"$1\t%2\t0\t0\n\n".as_slice(),
         b"\xff\n".as_slice(),
     ] {
         assert!(
-            parse_owned_session_id(output).is_err(),
+            parse_owned_session_identity(output).is_err(),
             "unexpected accepted output: {output:?}"
         );
     }

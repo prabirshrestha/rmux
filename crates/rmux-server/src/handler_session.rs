@@ -46,6 +46,14 @@ const DEFERRED_INITIAL_PANE_READY_SETTLE: Duration = Duration::from_millis(100);
 // autostarted ConPTY console is safely isolated from the launching client.
 const DEFERRED_INITIAL_PANE_INPUT_GRACE: Duration = Duration::from_secs(2);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CreatedSessionIdentity {
+    pub(super) session_id: SessionId,
+    pub(super) initial_pane_id: PaneId,
+    pub(super) initial_window_index: u32,
+    pub(super) initial_pane_index: u32,
+}
+
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub(in crate::handler) struct RenameSessionIdentityPause {
@@ -565,7 +573,7 @@ impl RequestHandler {
         let socket_path = self.socket_path();
         #[cfg(windows)]
         let mut deferred_initial_spawn = None;
-        let (response, silence_template_session, created_session_id) = {
+        let (response, silence_template_session, created_identity) = {
             let mut state = self.state.lock().await;
             let creation_options = resolve_session_creation_options(
                 &state.options,
@@ -760,11 +768,20 @@ impl RequestHandler {
                 }
             }
 
-            let created_session_id = state
+            let created_session = state
                 .sessions
                 .session(&session_name)
-                .expect("newly created session must still exist")
-                .id();
+                .expect("newly created session must still exist");
+            let initial_window_index = created_session.active_window_index();
+            let initial_pane_index = created_session.active_pane_index();
+            let created_identity = CreatedSessionIdentity {
+                session_id: created_session.id(),
+                initial_pane_id: created_session
+                    .pane_id_in_window(initial_window_index, initial_pane_index)
+                    .expect("newly created session must retain its initial pane"),
+                initial_window_index,
+                initial_pane_index,
+            };
             let silence_template_session =
                 created_group.and_then(|created| created.template_session);
             (
@@ -774,7 +791,7 @@ impl RequestHandler {
                     output: None,
                 }),
                 silence_template_session,
-                created_session_id,
+                created_identity,
             )
         };
 
@@ -794,7 +811,7 @@ impl RequestHandler {
             if let Err(error) = self
                 .detach_other_attach_clients_for_session_identity(
                     &session_name,
-                    created_session_id,
+                    created_identity.session_id,
                     requester_pid,
                     request.kill_other_clients,
                 )
@@ -806,7 +823,7 @@ impl RequestHandler {
         self.finish_new_session_lifecycle(
             requester_pid,
             &session_name,
-            created_session_id,
+            created_identity.session_id,
             silence_template_session.as_ref(),
             detached,
         )
@@ -817,7 +834,7 @@ impl RequestHandler {
         }
 
         match self
-            .render_new_session_output(created_session_id, request.print_format.as_deref())
+            .render_new_session_output(created_identity, request.print_format.as_deref())
             .await
         {
             Ok((current_session_name, output)) => Response::NewSession(NewSessionResponse {

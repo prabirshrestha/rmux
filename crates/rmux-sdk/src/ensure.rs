@@ -9,14 +9,20 @@ use serde::{Deserialize, Serialize};
 
 mod redaction;
 
-use crate::handles::{session, Rmux, Session};
+use crate::handles::{session, Pane, Rmux, Session};
 use crate::transport::TransportClient;
 use crate::{
-    ProcessCommandSpec, ProcessSpec, Result, RmuxEndpoint, RmuxError, SessionId, SessionName,
-    TerminalSizeSpec,
+    PaneId, PaneRef, ProcessCommandSpec, ProcessSpec, Result, RmuxEndpoint, RmuxError, SessionId,
+    SessionName, TerminalSizeSpec,
 };
 use redaction::redact_environment_error;
-use rmux_proto::{NewSessionExtRequest, Request, Response};
+use rmux_proto::{
+    NewSessionExtRequest, Request, Response, CAPABILITY_SDK_OWNED_SESSION_INITIAL_PANE_IDENTITY,
+    INTERNAL_OWNED_SESSION_INITIAL_PANE_FORMAT,
+};
+
+const STANDARD_OWNED_SESSION_INITIAL_PANE_FORMAT: &str =
+    "#{session_id}\t#{pane_id}\t#{window_index}\t#{pane_index}";
 
 #[cfg(windows)]
 const RMUX_CLIENT_SHELL_ENV: &str = "RMUX_CLIENT_SHELL";
@@ -415,14 +421,26 @@ pub(crate) async fn create_owned_session(
     endpoint: RmuxEndpoint,
     default_timeout: Option<Duration>,
     transport: TransportClient,
-) -> Result<(Session, SessionId)> {
+) -> Result<(Session, SessionId, Pane)> {
     debug_assert_eq!(builder.policy, EnsureSessionPolicy::CreateOnly);
     if !required_capabilities.is_empty() {
         crate::capabilities::require(&transport, required_capabilities).await?;
     }
     let mut request = builder.to_new_session_request(false);
     request.print_session_info = true;
-    request.print_format = Some("#{session_id}".to_owned());
+    request.print_format = Some(
+        if crate::capabilities::supports(
+            &transport,
+            &[CAPABILITY_SDK_OWNED_SESSION_INITIAL_PANE_IDENTITY],
+        )
+        .await?
+        {
+            INTERNAL_OWNED_SESSION_INITIAL_PANE_FORMAT
+        } else {
+            STANDARD_OWNED_SESSION_INITIAL_PANE_FORMAT
+        }
+        .to_owned(),
+    );
     crate::capabilities::require_process_command_if_present(
         &transport,
         request.process_command.as_ref(),
@@ -436,12 +454,23 @@ pub(crate) async fn create_owned_session(
     let Response::NewSession(response) = response else {
         return Err(session::unexpected_response("new-session", response));
     };
-    let session_id = parse_owned_session_id(
+    let identity = parse_owned_session_identity(
         response
             .command_output()
             .ok_or_else(|| owned_session_identity_error("missing print output"))?
             .stdout(),
     )?;
+    let pane = Pane::new_by_id(
+        PaneRef::new(
+            response.session_name.clone(),
+            identity.window_index,
+            identity.pane_index,
+        ),
+        identity.pane_id,
+        endpoint.clone(),
+        default_timeout,
+        transport.clone(),
+    );
     let session = Session::new(
         response.session_name,
         endpoint,
@@ -450,7 +479,7 @@ pub(crate) async fn create_owned_session(
         true,
         builder.creation_tags,
     );
-    Ok((session, session_id))
+    Ok((session, identity.session_id, pane))
 }
 
 pub(crate) async fn preflight_owned_session_capabilities(
@@ -460,7 +489,15 @@ pub(crate) async fn preflight_owned_session_capabilities(
     crate::capabilities::require(transport, required_capabilities).await
 }
 
-fn parse_owned_session_id(stdout: &[u8]) -> Result<SessionId> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OwnedSessionIdentity {
+    session_id: SessionId,
+    pane_id: PaneId,
+    window_index: u32,
+    pane_index: u32,
+}
+
+fn parse_owned_session_identity(stdout: &[u8]) -> Result<OwnedSessionIdentity> {
     let rendered = std::str::from_utf8(stdout)
         .map_err(|_| owned_session_identity_error("print output was not UTF-8"))?;
     let rendered = rendered
@@ -471,13 +508,48 @@ fn parse_owned_session_id(stdout: &[u8]) -> Result<SessionId> {
             "print output contained multiple lines",
         ));
     }
-    let raw_id = rendered
-        .strip_prefix('$')
-        .ok_or_else(|| owned_session_identity_error("print output did not contain a session id"))?;
-    let raw_id = raw_id.parse::<u32>().map_err(|_| {
-        owned_session_identity_error("print output contained an invalid session id")
+    let mut fields = rendered.split('\t');
+    let session_id =
+        parse_prefixed_owned_identity(fields.next(), '$', "session id", SessionId::new)?;
+    let pane_id = parse_prefixed_owned_identity(fields.next(), '%', "pane id", PaneId::new)?;
+    let window_index = parse_owned_index(fields.next(), "window index")?;
+    let pane_index = parse_owned_index(fields.next(), "pane index")?;
+    if fields.next().is_some() {
+        return Err(owned_session_identity_error(
+            "print output contained trailing identity fields",
+        ));
+    }
+    Ok(OwnedSessionIdentity {
+        session_id,
+        pane_id,
+        window_index,
+        pane_index,
+    })
+}
+
+fn parse_prefixed_owned_identity<T>(
+    field: Option<&str>,
+    prefix: char,
+    name: &str,
+    build: impl FnOnce(u32) -> T,
+) -> Result<T> {
+    let value = field
+        .ok_or_else(|| owned_session_identity_error(&format!("print output omitted {name}")))?;
+    let raw = value.strip_prefix(prefix).ok_or_else(|| {
+        owned_session_identity_error(&format!("print output {name} omitted `{prefix}` prefix"))
     })?;
-    Ok(SessionId::new(raw_id))
+    raw.parse::<u32>().map(build).map_err(|_| {
+        owned_session_identity_error(&format!("print output contained an invalid {name}"))
+    })
+}
+
+fn parse_owned_index(field: Option<&str>, name: &str) -> Result<u32> {
+    field
+        .ok_or_else(|| owned_session_identity_error(&format!("print output omitted {name}")))?
+        .parse::<u32>()
+        .map_err(|_| {
+            owned_session_identity_error(&format!("print output contained an invalid {name}"))
+        })
 }
 
 fn owned_session_identity_error(reason: &str) -> RmuxError {

@@ -14,7 +14,9 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use crate::transport::{DropGuard, TransportClient};
-use crate::{EnsureSession, Result, RmuxError, Session, SessionId, SessionName};
+use crate::{
+    EnsureSession, Pane, Result, RmuxError, Session, SessionId, SessionName, TerminalSizeSpec,
+};
 use rmux_proto::{
     KillSessionRequest, Request, Response, CAPABILITY_SDK_OWNED_SESSION_STABLE_IDENTITY,
     CAPABILITY_SDK_SESSION_LEASE, CAPABILITY_SDK_SESSION_LEASE_BY_ID_V2,
@@ -61,6 +63,8 @@ pub struct OwnedSessionBuilder<'a> {
     replace_existing: bool,
     cleanup_policy: CleanupPolicy,
     lease_ttl: Duration,
+    size: Option<TerminalSizeSpec>,
+    working_directory: Option<String>,
 }
 
 impl<'a> OwnedSessionBuilder<'a> {
@@ -71,6 +75,8 @@ impl<'a> OwnedSessionBuilder<'a> {
             replace_existing: false,
             cleanup_policy: CleanupPolicy::KillOnDrop,
             lease_ttl: DEFAULT_LEASE_TTL,
+            size: None,
+            working_directory: None,
         }
     }
 
@@ -94,6 +100,20 @@ impl<'a> OwnedSessionBuilder<'a> {
     #[must_use]
     pub const fn lease_ttl(mut self, ttl: Duration) -> Self {
         self.lease_ttl = ttl;
+        self
+    }
+
+    /// Sets the initial terminal geometry for the owned session's first pane.
+    #[must_use]
+    pub const fn size(mut self, size: TerminalSizeSpec) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    /// Sets the initial working directory for the owned session's first pane.
+    #[must_use]
+    pub fn working_directory(mut self, working_directory: impl Into<String>) -> Self {
+        self.working_directory = Some(working_directory.into());
         self
     }
 
@@ -125,8 +145,15 @@ impl<'a> OwnedSessionBuilder<'a> {
             let _ = super::session::kill_session(&transport, self.name.clone()).await?;
         }
 
-        let (session, session_id) = crate::ensure::create_owned_session(
-            EnsureSession::named(self.name).create_only().detached(true),
+        let mut ensure = EnsureSession::named(self.name).create_only().detached(true);
+        if let Some(size) = self.size {
+            ensure = ensure.size(size);
+        }
+        if let Some(working_directory) = self.working_directory {
+            ensure = ensure.working_directory(working_directory);
+        }
+        let (session, session_id, initial_pane) = crate::ensure::create_owned_session(
+            ensure,
             capabilities,
             endpoint,
             self.rmux.configured_default_timeout(),
@@ -156,6 +183,7 @@ impl<'a> OwnedSessionBuilder<'a> {
         let owned = OwnedSession {
             session: Some(session),
             session_id,
+            initial_pane,
             cleanup_policy: self.cleanup_policy,
             lease,
             signal_handler_state: Arc::new(signals::SignalHandlerState::default()),
@@ -179,12 +207,24 @@ impl<'a> IntoFuture for OwnedSessionBuilder<'a> {
 pub struct OwnedSession {
     session: Option<Session>,
     session_id: SessionId,
+    initial_pane: Pane,
     cleanup_policy: CleanupPolicy,
     lease: Option<OwnedSessionLease>,
     signal_handler_state: Arc<signals::SignalHandlerState>,
 }
 
 impl OwnedSession {
+    /// Returns the exact initial pane captured atomically with session creation.
+    ///
+    /// This handle is pinned to the daemon-assigned pane identity rather than rediscovering the
+    /// first pane through its mutable slot. Like other SDK pane handles, its session component is
+    /// the name returned by the daemon; callers must obtain a new handle after a later session
+    /// rename.
+    #[must_use]
+    pub fn initial_pane(&self) -> &Pane {
+        &self.initial_pane
+    }
+
     /// Returns the configured cleanup policy.
     #[must_use]
     pub const fn cleanup_policy(&self) -> CleanupPolicy {

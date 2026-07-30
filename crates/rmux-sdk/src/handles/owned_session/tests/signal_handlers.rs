@@ -1,4 +1,5 @@
 use super::*;
+use crate::{PaneId, PaneRef};
 
 #[cfg(any(unix, windows))]
 #[test]
@@ -127,16 +128,25 @@ fn signal_install_fixture(
     let (owned, daemon, state) = runtime.block_on(async {
         let (client_stream, server_stream) = tokio::io::duplex(1024);
         let state = Arc::new(signals::SignalHandlerState::default());
+        let session_name = SessionName::new(name).expect("valid session name");
+        let transport = TransportClient::spawn(client_stream);
         let owned = OwnedSession {
             session: Some(Session::new(
-                SessionName::new(name).expect("valid session name"),
+                session_name.clone(),
                 crate::RmuxEndpoint::Default,
                 None,
-                TransportClient::spawn(client_stream),
+                transport.clone(),
                 true,
                 None,
             )),
             session_id: SessionId::new(42),
+            initial_pane: Pane::new_by_id(
+                PaneRef::in_first_window(session_name, 0),
+                PaneId::new(7),
+                crate::RmuxEndpoint::Default,
+                None,
+                transport,
+            ),
             cleanup_policy: CleanupPolicy::KillOnDrop,
             lease: None,
             signal_handler_state: Arc::clone(&state),
@@ -168,16 +178,25 @@ fn assert_signal_install_fails_without_latching(
 async fn released_owner_rejects_signal_handlers_without_latching_installation() {
     let (client_stream, _server_stream) = tokio::io::duplex(1024);
     let state = Arc::new(signals::SignalHandlerState::default());
+    let session_name = SessionName::new("preserved-owner").expect("valid session name");
+    let transport = TransportClient::spawn(client_stream);
     let owned = OwnedSession {
         session: Some(Session::new(
-            SessionName::new("preserved-owner").expect("valid session name"),
+            session_name.clone(),
             crate::RmuxEndpoint::Default,
             None,
-            TransportClient::spawn(client_stream),
+            transport.clone(),
             true,
             None,
         )),
         session_id: SessionId::new(42),
+        initial_pane: Pane::new_by_id(
+            PaneRef::in_first_window(session_name, 0),
+            PaneId::new(7),
+            crate::RmuxEndpoint::Default,
+            None,
+            transport,
+        ),
         cleanup_policy: CleanupPolicy::Preserve,
         lease: None,
         signal_handler_state: Arc::clone(&state),

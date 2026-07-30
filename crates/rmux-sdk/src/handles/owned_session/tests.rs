@@ -1,11 +1,11 @@
 use super::*;
-
 use rmux_proto::{
     encode_frame, CreateSessionLeaseResponse, ErrorResponse, FrameDecoder, HandshakeResponse,
     KillSessionResponse, NewSessionResponse, ReleaseSessionLeaseResponse,
-    RenewSessionLeaseResponse, CAPABILITY_SDK_OWNED_SESSION_STABLE_IDENTITY,
-    CAPABILITY_SDK_SESSION_LEASE_BY_ID, CAPABILITY_SDK_SESSION_LEASE_BY_ID_V2, RMUX_WIRE_VERSION,
-    SUPPORTED_CAPABILITIES,
+    RenewSessionLeaseResponse, CAPABILITY_SDK_OWNED_SESSION_INITIAL_PANE_IDENTITY,
+    CAPABILITY_SDK_OWNED_SESSION_STABLE_IDENTITY, CAPABILITY_SDK_SESSION_LEASE_BY_ID,
+    CAPABILITY_SDK_SESSION_LEASE_BY_ID_V2, INTERNAL_OWNED_SESSION_INITIAL_PANE_FORMAT,
+    RMUX_WIRE_VERSION, SUPPORTED_CAPABILITIES,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -75,10 +75,120 @@ async fn current_stable_identity_capability_allows_kill_on_drop_creation_and_cle
         .await
         .expect("builder task joins")
         .expect("kill-on-drop owner builds directly from new-session response");
+    assert_eq!(owned.initial_pane().target().window_index, 0);
+    assert_eq!(owned.initial_pane().target().pane_index, 0);
     drop(owned);
 
     let Request::KillSession(cleanup) = daemon.read_request().await else {
         panic!("kill-on-drop must not insert a persistent claim RPC after creation");
+    };
+    assert_eq!(cleanup.target.as_str(), "$42");
+    daemon
+        .write_response(Response::KillSession(KillSessionResponse { existed: true }))
+        .await;
+}
+
+#[tokio::test]
+async fn stock_091_daemon_uses_standard_print_format_without_a_new_capability() {
+    let capabilities = SUPPORTED_CAPABILITIES
+        .iter()
+        .copied()
+        .filter(|capability| *capability != CAPABILITY_SDK_OWNED_SESSION_INITIAL_PANE_IDENTITY)
+        .map(str::to_owned)
+        .collect();
+    let (builder, mut daemon, session_name) =
+        start_owned_builder_with_capabilities(CleanupPolicy::KillOnDrop, capabilities).await;
+
+    let Request::NewSessionExt(request) = daemon.read_request().await else {
+        panic!("stock daemon must receive new-session after the cached preflight");
+    };
+    assert_eq!(request.session_name.as_ref(), Some(&session_name));
+    assert_eq!(
+        request.print_format.as_deref(),
+        Some("#{session_id}\t#{pane_id}\t#{window_index}\t#{pane_index}")
+    );
+    daemon
+        .write_response(Response::NewSession(NewSessionResponse {
+            session_name,
+            detached: true,
+            output: Some(rmux_proto::CommandOutput::from_stdout(
+                b"$42\t%7\t0\t0\n".to_vec(),
+            )),
+        }))
+        .await;
+
+    let owned = builder
+        .await
+        .expect("builder task joins")
+        .expect("stock 0.9.1 capability set remains supported");
+    assert_eq!(owned.initial_pane().target().window_index, 0);
+    assert_eq!(owned.initial_pane().target().pane_index, 0);
+    drop(owned);
+
+    let Request::KillSession(cleanup) = daemon.read_request().await else {
+        panic!("stock-compatible owner must retain stable cleanup");
+    };
+    assert_eq!(cleanup.target.as_str(), "$42");
+    daemon
+        .write_response(Response::KillSession(KillSessionResponse { existed: true }))
+        .await;
+}
+
+#[tokio::test]
+async fn owned_session_forwards_initial_size_and_working_directory() {
+    let (client_stream, server_stream) = tokio::io::duplex(8192);
+    let rmux = Rmux::from_transport_for_test(TransportClient::spawn(client_stream), None);
+    let session_name = SessionName::new("sized-owned-builder").expect("valid session name");
+    let builder_name = session_name.clone();
+    let builder = tokio::spawn(async move {
+        rmux.owned_session(builder_name)
+            .size(TerminalSizeSpec::new(132, 43))
+            .working_directory("/tmp/owned-session-cwd")
+            .await
+    });
+    let mut daemon = FakeDaemon::new(server_stream);
+
+    assert!(matches!(daemon.read_request().await, Request::Handshake(_)));
+    daemon
+        .write_response(Response::Handshake(HandshakeResponse {
+            wire_version: RMUX_WIRE_VERSION,
+            capabilities: current_capabilities(),
+        }))
+        .await;
+
+    let Request::NewSessionExt(request) = daemon.read_request().await else {
+        panic!("owned-session builder must create the session after preflight");
+    };
+    assert_eq!(request.session_name.as_ref(), Some(&session_name));
+    assert_eq!(request.size, Some(rmux_proto::TerminalSize::new(132, 43)));
+    assert_eq!(
+        request.working_directory.as_deref(),
+        Some("/tmp/owned-session-cwd")
+    );
+    assert_eq!(
+        request.print_format.as_deref(),
+        Some(INTERNAL_OWNED_SESSION_INITIAL_PANE_FORMAT)
+    );
+    daemon
+        .write_response(Response::NewSession(NewSessionResponse {
+            session_name,
+            detached: true,
+            output: Some(rmux_proto::CommandOutput::from_stdout(
+                b"$42\t%7\t0\t0\n".to_vec(),
+            )),
+        }))
+        .await;
+
+    let owned = builder
+        .await
+        .expect("builder task joins")
+        .expect("builder preserves initial pane creation options");
+    assert_eq!(owned.initial_pane().target().window_index, 0);
+    assert_eq!(owned.initial_pane().target().pane_index, 0);
+    drop(owned);
+
+    let Request::KillSession(cleanup) = daemon.read_request().await else {
+        panic!("dropping the owner must clean up the created session");
     };
     assert_eq!(cleanup.target.as_str(), "$42");
     daemon
@@ -342,6 +452,41 @@ async fn owner_exit_rolls_back_created_session_when_lease_creation_fails() {
     );
 }
 
+#[tokio::test]
+async fn cancelling_owner_exit_creation_rolls_back_the_created_session() {
+    let (builder, mut daemon, session_name) =
+        start_owned_builder(CleanupPolicy::KillOnOwnerExit).await;
+    answer_new_session(&mut daemon, session_name).await;
+    answer_lease_identity_handshake(&mut daemon, current_capabilities()).await;
+
+    let Request::CreateSessionLease(lease) = daemon.read_request().await else {
+        panic!("owner-exit must begin lease creation after creating the session");
+    };
+    assert_eq!(lease.session_name.as_str(), "$42");
+
+    builder.abort();
+    assert!(
+        builder
+            .await
+            .expect_err("aborted owned-session builder must report cancellation")
+            .is_cancelled(),
+        "builder cancellation must reach the armed creation rollback guard"
+    );
+
+    daemon
+        .write_response(Response::Error(ErrorResponse {
+            error: rmux_proto::RmuxError::Server("cancelled lease request drained".to_owned()),
+        }))
+        .await;
+    let Request::KillSession(rollback) = daemon.read_request().await else {
+        panic!("cancelling after creation must trigger compensating cleanup");
+    };
+    assert_eq!(rollback.target.as_str(), "$42");
+    daemon
+        .write_response(Response::KillSession(KillSessionResponse { existed: true }))
+        .await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn owned_session_builder_shares_one_deadline_through_lease_creation() {
     let (client_stream, server_stream) = tokio::io::duplex(8192);
@@ -528,12 +673,15 @@ async fn answer_new_session(daemon: &mut FakeDaemon, session_name: SessionName) 
     assert_eq!(request.session_name.as_ref(), Some(&session_name));
     assert!(request.detached);
     assert!(request.print_session_info);
-    assert_eq!(request.print_format.as_deref(), Some("#{session_id}"));
+    assert_eq!(
+        request.print_format.as_deref(),
+        Some(INTERNAL_OWNED_SESSION_INITIAL_PANE_FORMAT)
+    );
     daemon
         .write_response(Response::NewSession(NewSessionResponse {
             session_name,
             detached: true,
-            output: Some(rmux_proto::CommandOutput::from_stdout(b"$42\n")),
+            output: Some(rmux_proto::CommandOutput::from_stdout(b"$42\t%7\t0\t0\n")),
         }))
         .await;
 }

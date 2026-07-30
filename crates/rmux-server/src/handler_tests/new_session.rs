@@ -440,6 +440,119 @@ async fn new_session_print_resolves_captured_identity_after_concurrent_rename() 
 }
 
 #[tokio::test]
+async fn owned_session_print_formats_retain_the_created_pane_after_name_reuse() {
+    for (suffix, print_format) in [
+        (
+            "standard",
+            "#{session_id}\t#{pane_id}\t#{window_index}\t#{pane_index}",
+        ),
+        ("atomic", INTERNAL_OWNED_SESSION_INITIAL_PANE_FORMAT),
+    ] {
+        let handler = RequestHandler::new();
+        let original_name = session_name(&format!("owned-before-rename-{suffix}"));
+        let renamed_name = session_name(&format!("owned-after-rename-{suffix}"));
+        let session_id = handler.state.lock().await.sessions.next_session_id();
+        let pause = handler.install_new_session_output_pause(session_id);
+        let create_handler = handler.clone();
+        let create_name = original_name.clone();
+        let print_format = print_format.to_owned();
+        let create = tokio::spawn(async move {
+            create_handler
+                .handle(Request::NewSessionExt(Box::new(NewSessionExtRequest {
+                    session_name: Some(create_name),
+                    working_directory: None,
+                    detached: true,
+                    size: Some(TerminalSize::new(132, 43)),
+                    environment: None,
+                    group_target: None,
+                    attach_if_exists: false,
+                    detach_other_clients: false,
+                    kill_other_clients: false,
+                    flags: None,
+                    window_name: None,
+                    print_session_info: true,
+                    print_format: Some(print_format),
+                    command: None,
+                    process_command: None,
+                    client_environment: None,
+                    skip_environment_update: false,
+                })))
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), pause.reached.notified())
+            .await
+            .expect("owned new-session reaches the pre-print pause");
+        let renamed = handler
+            .handle(Request::RenameSession(RenameSessionRequest {
+                target: original_name.clone(),
+                new_name: renamed_name.clone(),
+            }))
+            .await;
+        assert!(matches!(renamed, Response::RenameSession(_)), "{renamed:?}");
+        let replacement = handler
+            .handle(Request::NewSession(NewSessionRequest {
+                session_name: original_name.clone(),
+                detached: true,
+                size: None,
+                environment: None,
+            }))
+            .await;
+        assert!(
+            matches!(replacement, Response::NewSession(_)),
+            "{replacement:?}"
+        );
+
+        let (captured_output, replacement_output) = {
+            let state = handler.state.lock().await;
+            let captured = state
+                .sessions
+                .session(&renamed_name)
+                .expect("renamed created session remains live");
+            let replacement = state
+                .sessions
+                .session(&original_name)
+                .expect("old name is reusable by a distinct session");
+            let captured_window = captured.active_window_index();
+            let captured_pane = captured.active_pane_index();
+            let captured_pane_id = captured
+                .pane_id_in_window(captured_window, captured_pane)
+                .expect("captured session retains its initial pane");
+            let replacement_window = replacement.active_window_index();
+            let replacement_pane = replacement.active_pane_index();
+            let replacement_pane_id = replacement
+                .pane_id_in_window(replacement_window, replacement_pane)
+                .expect("replacement session retains its initial pane");
+            (
+                format!(
+                    "{}\t{}\t{captured_window}\t{captured_pane}\n",
+                    captured.id(),
+                    captured_pane_id,
+                ),
+                format!(
+                    "{}\t{}\t{replacement_window}\t{replacement_pane}\n",
+                    replacement.id(),
+                    replacement_pane_id,
+                ),
+            )
+        };
+        assert_ne!(captured_output, replacement_output);
+        pause.release.notify_one();
+
+        assert_eq!(
+            create.await.expect("owned new-session task joins"),
+            Response::NewSession(rmux_proto::NewSessionResponse {
+                session_name: renamed_name,
+                detached: true,
+                output: Some(rmux_proto::CommandOutput::from_stdout(
+                    captured_output.into_bytes(),
+                )),
+            })
+        );
+    }
+}
+
+#[tokio::test]
 async fn auto_named_session_uses_next_global_session_id_after_named_sessions() {
     let handler = RequestHandler::new();
     for name in ["0", "1", "bob"] {

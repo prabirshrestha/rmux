@@ -50,6 +50,9 @@ pub const CAPABILITY_SDK_SESSION_LEASE_BY_ID: &str = "sdk.session.lease.by_id";
 pub const CAPABILITY_SDK_SESSION_LEASE_BY_ID_V2: &str = "sdk.session.lease.by_id.v2";
 /// Stable feature id for owned-session creation that returns a stable session identity.
 pub const CAPABILITY_SDK_OWNED_SESSION_STABLE_IDENTITY: &str = "sdk.owned_session.stable_identity";
+/// Stable feature id for owned-session creation that atomically returns the initial pane identity.
+pub const CAPABILITY_SDK_OWNED_SESSION_INITIAL_PANE_IDENTITY: &str =
+    "sdk.owned_session.initial_pane_identity";
 /// Stable feature id for explicit SDK process launch modes.
 pub const CAPABILITY_SDK_PROCESS_COMMAND: &str = "sdk.process.command";
 /// Stable feature id for target-client aware command request variants.
@@ -91,6 +94,7 @@ pub const SUPPORTED_CAPABILITIES: &[&str] = &[
     CAPABILITY_SDK_SESSION_LEASE,
     CAPABILITY_SDK_SESSION_LEASE_BY_ID_V2,
     CAPABILITY_SDK_OWNED_SESSION_STABLE_IDENTITY,
+    CAPABILITY_SDK_OWNED_SESSION_INITIAL_PANE_IDENTITY,
     CAPABILITY_SDK_PROCESS_COMMAND,
     CAPABILITY_TARGET_CLIENT_COMMANDS,
     CAPABILITY_CLI_TARGET_ACTIONS,
