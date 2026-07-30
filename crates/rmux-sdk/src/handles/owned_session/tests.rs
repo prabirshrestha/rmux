@@ -75,6 +75,7 @@ async fn current_stable_identity_capability_allows_kill_on_drop_creation_and_cle
         .await
         .expect("builder task joins")
         .expect("kill-on-drop owner builds directly from new-session response");
+    assert_eq!(owned.initial_pane_id(), crate::PaneId::new(7));
     assert_eq!(owned.initial_pane().target().window_index, 0);
     assert_eq!(owned.initial_pane().target().pane_index, 0);
     drop(owned);
@@ -121,6 +122,7 @@ async fn stock_091_daemon_uses_standard_print_format_without_a_new_capability() 
         .await
         .expect("builder task joins")
         .expect("stock 0.9.1 capability set remains supported");
+    assert_eq!(owned.initial_pane_id(), crate::PaneId::new(7));
     assert_eq!(owned.initial_pane().target().window_index, 0);
     assert_eq!(owned.initial_pane().target().pane_index, 0);
     drop(owned);
@@ -183,6 +185,7 @@ async fn owned_session_forwards_initial_size_and_working_directory() {
         .await
         .expect("builder task joins")
         .expect("builder preserves initial pane creation options");
+    assert_eq!(owned.initial_pane_id(), crate::PaneId::new(7));
     assert_eq!(owned.initial_pane().target().window_index, 0);
     assert_eq!(owned.initial_pane().target().pane_index, 0);
     drop(owned);

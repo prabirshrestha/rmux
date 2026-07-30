@@ -140,6 +140,7 @@ fn signal_install_fixture(
                 None,
             )),
             session_id: SessionId::new(42),
+            initial_pane_id: PaneId::new(7),
             initial_pane: Pane::new_by_id(
                 PaneRef::in_first_window(session_name, 0),
                 PaneId::new(7),
@@ -190,6 +191,7 @@ async fn released_owner_rejects_signal_handlers_without_latching_installation() 
             None,
         )),
         session_id: SessionId::new(42),
+        initial_pane_id: PaneId::new(7),
         initial_pane: Pane::new_by_id(
             PaneRef::in_first_window(session_name, 0),
             PaneId::new(7),

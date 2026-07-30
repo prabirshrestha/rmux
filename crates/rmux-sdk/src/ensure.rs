@@ -421,7 +421,7 @@ pub(crate) async fn create_owned_session(
     endpoint: RmuxEndpoint,
     default_timeout: Option<Duration>,
     transport: TransportClient,
-) -> Result<(Session, SessionId, Pane)> {
+) -> Result<(Session, SessionId, PaneId, Pane)> {
     debug_assert_eq!(builder.policy, EnsureSessionPolicy::CreateOnly);
     if !required_capabilities.is_empty() {
         crate::capabilities::require(&transport, required_capabilities).await?;
@@ -479,7 +479,7 @@ pub(crate) async fn create_owned_session(
         true,
         builder.creation_tags,
     );
-    Ok((session, identity.session_id, pane))
+    Ok((session, identity.session_id, identity.pane_id, pane))
 }
 
 pub(crate) async fn preflight_owned_session_capabilities(

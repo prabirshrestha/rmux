@@ -152,14 +152,15 @@ impl<'a> OwnedSessionBuilder<'a> {
         if let Some(working_directory) = self.working_directory {
             ensure = ensure.working_directory(working_directory);
         }
-        let (session, session_id, initial_pane) = crate::ensure::create_owned_session(
-            ensure,
-            capabilities,
-            endpoint,
-            self.rmux.configured_default_timeout(),
-            transport.clone(),
-        )
-        .await?;
+        let (session, session_id, initial_pane_id, initial_pane) =
+            crate::ensure::create_owned_session(
+                ensure,
+                capabilities,
+                endpoint,
+                self.rmux.configured_default_timeout(),
+                transport.clone(),
+            )
+            .await?;
         let mut creation_rollback = DropGuard::best_effort(
             session.transport().reusable(),
             session_identity_kill_request(session_id),
@@ -183,6 +184,7 @@ impl<'a> OwnedSessionBuilder<'a> {
         let owned = OwnedSession {
             session: Some(session),
             session_id,
+            initial_pane_id,
             initial_pane,
             cleanup_policy: self.cleanup_policy,
             lease,
@@ -207,6 +209,7 @@ impl<'a> IntoFuture for OwnedSessionBuilder<'a> {
 pub struct OwnedSession {
     session: Option<Session>,
     session_id: SessionId,
+    initial_pane_id: crate::PaneId,
     initial_pane: Pane,
     cleanup_policy: CleanupPolicy,
     lease: Option<OwnedSessionLease>,
@@ -214,6 +217,14 @@ pub struct OwnedSession {
 }
 
 impl OwnedSession {
+    /// Returns the daemon-assigned identity of the initial pane.
+    ///
+    /// Unlike [`Pane::id`], this is creation-time data and performs no daemon lookup.
+    #[must_use]
+    pub const fn initial_pane_id(&self) -> crate::PaneId {
+        self.initial_pane_id
+    }
+
     /// Returns the exact initial pane captured atomically with session creation.
     ///
     /// This handle is pinned to the daemon-assigned pane identity rather than rediscovering the
